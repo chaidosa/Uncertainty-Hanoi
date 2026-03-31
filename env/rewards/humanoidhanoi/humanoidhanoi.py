@@ -63,27 +63,27 @@ def compute_rewards(self, action):
     sigma = getattr(self, "adaptation_sigma_t", 1.0)
     sigma = float(np.clip(sigma, 0.0, 1.0))
 
-    # 1. Efficiency penalty — incentivise finishing sooner
-    q["r_efficiency"] = float(t) / T_MAX_PLACE
+    # 1. Efficiency penalty — negative per-step cost incentivises finishing sooner
+    q["r_efficiency"] = -float(t) / T_MAX_PLACE
 
-    # 2. Successful fast-placement bonus (only at episode end / skill end)
+    # 2. Successful fast-placement bonus (positive reward at episode end)
     success = self.is_box_upright() and self.is_box_at_target()
     if success:
-        q["r_fast_bonus"] = -(1.0 - float(t) / T_MAX_PLACE)
+        q["r_fast_bonus"] = (1.0 - float(t) / T_MAX_PLACE)
     else:
         q["r_fast_bonus"] = 0.0
 
-    # 3. Overconfident-failure penalty
+    # 3. Overconfident-failure penalty (negative when box fell + model was confident)
     box_fell = not self.is_box_upright()
     if box_fell:
-        q["r_uncertainty_penalty"] = (1.0 - sigma)
+        q["r_uncertainty_penalty"] = -(1.0 - sigma)
     else:
         q["r_uncertainty_penalty"] = 0.0
 
-    # 4. Calibration: penalise fast lowering when uncertainty is high
+    # 4. Calibration: negative penalty for fast lowering when uncertainty is high
     speed = self.get_box_vertical_speed()
     safe_speed = V_MIN + (V_MAX - V_MIN) * (1.0 - sigma)
-    q["r_calibration"] = float(max(0.0, speed - safe_speed))
+    q["r_calibration"] = -float(max(0.0, speed - safe_speed))
 
     return q
 

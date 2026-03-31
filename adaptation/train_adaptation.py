@@ -107,7 +107,7 @@ def kl_divergence(mu: torch.Tensor, logvar: torch.Tensor, lengths: torch.Tensor)
     return (kl * mask).sum() / mask.sum()
 
 
-def mean_sigma(logvar: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+def mean_sigma(logvar: torch.Tensor, lengths: torch.Tensor) -> float:
     """Mean sigma across valid final timesteps."""
     B, T, D = logvar.shape
     sigma = torch.mean(torch.exp(logvar), dim=-1)  # (B, T)
@@ -198,6 +198,7 @@ def train(
         train_mse_sum = 0.0
         train_kl_sum = 0.0
         train_steps = 0
+        grad_norm = 0.0
         for obs, labels, lengths in train_loader:
             obs, labels, lengths = obs.to(device), labels.to(device), lengths.to(device)
             z_means, z_logvars = model.forward_sequence(obs)

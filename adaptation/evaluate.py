@@ -278,7 +278,6 @@ def eval_full_hanoi(
 
         ep_sigma_log = []
         ep_z_log = []
-        ep_reward = 0.0
         done = False
         step = 0
         lstm_hx = None

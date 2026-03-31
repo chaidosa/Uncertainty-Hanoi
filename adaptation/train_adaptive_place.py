@@ -19,10 +19,8 @@ Usage
 from __future__ import annotations
 
 import argparse
-import copy
 import os
 import sys
-import math
 import time
 import numpy as np
 import torch
@@ -185,6 +183,8 @@ class RolloutBuffer:
         self.values = torch.zeros(num_steps, num_envs)
         self.priv = torch.zeros(num_steps, num_envs, priv_dim)
         self.sigmas = torch.zeros(num_steps, num_envs)
+        self.returns = torch.zeros(num_steps, num_envs)
+        self.advantages = torch.zeros(num_steps, num_envs)
         self.ptr = 0
         self.num_steps = num_steps
         self.num_envs = num_envs
@@ -243,7 +243,7 @@ class RolloutBuffer:
             "rollout/value_mean": self.values.mean().item(),
             "rollout/sigma_mean": self.sigmas.mean().item(),
             "rollout/sigma_std": self.sigmas.std().item(),
-            "rollout/advantage_mean": self.advantages.mean().item() if hasattr(self, "advantages") else 0,
+            "rollout/advantage_mean": self.advantages.mean().item(),
         }
 
 
