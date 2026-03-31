@@ -1,6 +1,26 @@
 {
     "normalize": false,
     "weights": {
+        "r_efficiency": {
+            "weighting": 0.02,
+            "scaling": 1.0,
+            "kernel": false
+        },
+        "r_fast_bonus": {
+            "weighting": 0.5,
+            "scaling": 1.0,
+            "kernel": false
+        },
+        "r_uncertainty_penalty": {
+            "weighting": 2.0,
+            "scaling": 1.0,
+            "kernel": false
+        },
+        "r_calibration": {
+            "weighting": 0.1,
+            "scaling": 1.0,
+            "kernel": false
+        }
     },
     "terminations": [
         "base_height",

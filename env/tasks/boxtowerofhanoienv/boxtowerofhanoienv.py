@@ -10,9 +10,22 @@ from util.quaternion import *
 from env.genericenv import GenericEnv
 from util.colors import FAIL, ENDC
 from env.util.interactivecommandsmixin import BoxManipulationCmd
-from scipy.spatial.transform import Rotation as R 
+from scipy.spatial.transform import Rotation as R
 
 wrap_to_pi = lambda x: (x + np.pi) % (2 * np.pi) - np.pi
+
+# ---------------------------------------------------------------------------
+# Observation dimensions for the adaptation module
+# ---------------------------------------------------------------------------
+# base_orient(4) + base_ang_vel(3) + motor_pos(20) + motor_vel(20)
+# + hand_contact_force(6) + box_pose_relative(6) = 59
+ADAPTATION_OBS_DIM = 59
+
+# Normalization ranges for privileged labels (box physical properties)
+BOX_MASS_RANGE = (0.0, 3.5)       # kg
+BOX_FRICTION_RANGE = (0.1, 1.0)   # sliding friction coefficient
+BOX_COM_OFFSET_RANGE = (-0.05, 0.05)  # metres per axis
+BOX_SIZE_RANGE = (0.1, 0.25)      # half-extents in metres
 
 class BoxTowerOfHanoiEnv(GenericEnv, BoxManipulationCmd):
 
@@ -43,11 +56,136 @@ class BoxTowerOfHanoiEnv(GenericEnv, BoxManipulationCmd):
 
         np.random.seed(24)
 
-        self.dynamics_randomization = True
-
     def _get_state(self):
 
         return np.zeros(80)
+
+    # ------------------------------------------------------------------
+    # Adaptation-module observation builder
+    # ------------------------------------------------------------------
+
+    def get_adaptation_obs(self) -> np.ndarray:
+        """Build the 59-D observation vector consumed by the adaptation module.
+
+        Layout:
+          [0:4]   base orientation quaternion (wxyz)
+          [4:7]   base angular velocity (IMU gyro)
+          [7:27]  motor positions (20 actuated joints)
+          [27:47] motor velocities (20 actuated joints)
+          [47:50] left-hand contact force (3D)
+          [50:53] right-hand contact force (3D)
+          [53:59] current box pose relative to robot base (x, y, z, roll, pitch, yaw)
+        """
+        obs = np.zeros(ADAPTATION_OBS_DIM)
+
+        # Proprioception
+        obs[0:4] = self.sim.get_base_orientation()
+        obs[4:7] = self.sim.data.sensor('torso/base/imu-gyro').data
+        obs[7:27] = self.sim.get_motor_position()
+        obs[27:47] = self.sim.get_motor_velocity()
+
+        # Hand contact forces (3D each, from elbow bodies)
+        obs[47:50] = self.sim.get_body_contact_force(self.sim.hand_body_name[0])
+        obs[50:53] = self.sim.get_body_contact_force(self.sim.hand_body_name[1])
+
+        # Box pose relative to robot base
+        obs[53:59] = self._get_current_box_pose_relative()
+
+        return obs
+
+    def _get_current_box_pose_relative(self) -> np.ndarray:
+        """Get the current box pose (xyz + rpy) in the robot base frame."""
+        base_pose = self.sim.get_body_pose(self.sim.base_body_name)
+        box_idx = self._active_box_index()
+        box_names = ["box", "box1", "box2"]
+        box_pose = self.sim.get_body_pose(box_names[box_idx])
+        rel_pose = self.sim.get_relative_pose(base_pose, box_pose)
+        rel_xyz = rel_pose[:3]
+        rel_rpy = R.from_quat(mj2scipy(rel_pose[3:])).as_euler('xyz')
+        return np.concatenate([rel_xyz, rel_rpy])
+
+    def _active_box_index(self) -> int:
+        """Return the index (0, 1, 2) of the box currently being manipulated."""
+        if self.current_hold_box_number is not None:
+            return self.current_hold_box_number
+        if self.box_finish_count >= 0 and self.box_finish_count < len(self.box_pick_order):
+            return self.box_pick_order[self.box_finish_count]
+        return 0
+
+    # ------------------------------------------------------------------
+    # Privileged ground-truth box properties (for Phase 1 training)
+    # ------------------------------------------------------------------
+
+    def get_privileged_box_properties(self) -> np.ndarray:
+        """Return normalized ground-truth physical properties for the active box.
+
+        Layout (8-D, matches latent_dim):
+          [0]   mass             normalized to [0, 1]
+          [1]   sliding friction normalized to [0, 1]
+          [2:5] CoM offset (xyz) normalized to [-1, 1]
+          [5:8] box half-extents normalized to [0, 1]
+        """
+        idx = self._active_box_index()
+        box_body_names = ["box", "box1", "box2"]
+        box_geom_names = ["box0", "box1", "box2"]
+
+        # Mass
+        raw_mass = float(self.sim.model.body(box_body_names[idx]).mass)
+        norm_mass = np.clip(
+            (raw_mass - BOX_MASS_RANGE[0]) / (BOX_MASS_RANGE[1] - BOX_MASS_RANGE[0]), 0, 1
+        )
+
+        # Sliding friction (first element of 3-vector)
+        geom_id = mj.mj_name2id(self.sim.model, mj.mjtObj.mjOBJ_GEOM, box_geom_names[idx])
+        raw_fric = float(self.sim.model.geom_friction[geom_id, 0])
+        norm_fric = np.clip(
+            (raw_fric - BOX_FRICTION_RANGE[0]) / (BOX_FRICTION_RANGE[1] - BOX_FRICTION_RANGE[0]),
+            0, 1,
+        )
+
+        # CoM offset from geometric center
+        raw_ipos = self.sim.model.body(box_body_names[idx]).ipos.copy()
+        norm_ipos = np.clip(
+            raw_ipos / max(abs(BOX_COM_OFFSET_RANGE[0]), abs(BOX_COM_OFFSET_RANGE[1])),
+            -1, 1,
+        )
+
+        # Box half-extents
+        raw_size = self.sim.model.geom(box_geom_names[idx]).size.copy()
+        norm_size = np.clip(
+            (raw_size - BOX_SIZE_RANGE[0]) / (BOX_SIZE_RANGE[1] - BOX_SIZE_RANGE[0]),
+            0, 1,
+        )
+
+        return np.concatenate([[norm_mass, norm_fric], norm_ipos, norm_size])
+
+    # ------------------------------------------------------------------
+    # Placement dynamics helpers (used by adaptive-place rewards)
+    # ------------------------------------------------------------------
+
+    def get_box_vertical_speed(self) -> float:
+        """Return absolute vertical velocity of the active box (m/s)."""
+        idx = self._active_box_index()
+        box_body_names = ["box", "box1", "box2"]
+        vel = self.sim.get_body_velocity(box_body_names[idx])
+        return abs(float(vel[2]))  # z-component of linear velocity
+
+    def is_box_upright(self, tilt_threshold_deg: float = 30.0) -> bool:
+        """Check whether the active box is roughly upright."""
+        idx = self._active_box_index()
+        box_body_names = ["box", "box1", "box2"]
+        pose = self.sim.get_body_pose(box_body_names[idx])
+        rpy = R.from_quat(mj2scipy(pose[3:])).as_euler('xyz')
+        tilt = np.sqrt(rpy[0] ** 2 + rpy[1] ** 2)
+        return tilt < np.deg2rad(tilt_threshold_deg)
+
+    def is_box_at_target(self, pos_threshold: float = 0.10) -> bool:
+        """Check whether the active box xy-position is within threshold of target."""
+        idx = self._active_box_index()
+        qpos_slices = [slice(-21, -14), slice(-14, -7), slice(-7, None)]
+        box_pos = self.sim.data.qpos[qpos_slices[idx]][:3]
+        target_xy = self.box_target[:2] if len(self.box_target) >= 2 else np.zeros(2)
+        return float(np.linalg.norm(box_pos[:2] - target_xy)) < pos_threshold
 
     def reset(self, interactive_evaluation=False):
 
@@ -78,15 +216,21 @@ class BoxTowerOfHanoiEnv(GenericEnv, BoxManipulationCmd):
 
         self.log_init_status()
 
+        # Freeze base (3 slides + ball) so the viewer demo does not tip without a balance policy.
+        # See MujocoSim.hold(); matches Digit XML layout vs a single free joint.
+        self.sim.hold()
+        mj.mj_forward(self.sim.model, self.sim.data)
+
         return self.get_state()
 
     def step(self):
 
         self.draw_markers()
 
-        if self.time_step < 2:
-            simulator_repeat_steps = int(self.sim.simulator_rate / self.policy_rate)
-            self.step_simulation(np.zeros(self.robot.n_actuators), simulator_repeat_steps, integral_action=False)
+        simulator_repeat_steps = int(self.sim.simulator_rate / self.policy_rate)
+        # Hold current motor positions (zero delta): stable stand without a learned policy.
+        # Fixed offset + zero action tracks nominal pose and tends to collapse.
+        self.step_simulation(np.zeros(self.robot.n_actuators), simulator_repeat_steps, integral_action=True)
 
         self.time_step += 1
 
@@ -416,6 +560,15 @@ class BoxTowerOfHanoiEnv(GenericEnv, BoxManipulationCmd):
 
         self.first_frame_pose = None
 
+        # Adaptation-module tracking
+        self.adaptation_z_t = np.zeros(8)
+        self.adaptation_sigma_t = 1.0
+        self.adaptation_z_log = []
+        self.adaptation_sigma_log = []
+        self.place_start_time = None
+        self.place_skill_active = False
+        self.prev_box_z = None
+
     def log_init_status(self):
         initial_dyn_params = {"damping": self.sim.get_dof_damping().copy(),
                                    "mass": self.sim.get_body_mass().copy(),
@@ -463,6 +616,8 @@ class BoxTowerOfHanoiEnv(GenericEnv, BoxManipulationCmd):
             "robot_rotation_status": self.robot_rotation_status,
             "robot_target_position_status": self.robot_target_position_status,
             "robot_target_rotation_status": self.robot_target_rotation_status,
+            "adaptation_z_log": self.adaptation_z_log,
+            "adaptation_sigma_log": self.adaptation_sigma_log,
             "dr_status": self.dr_status,
             "energy_status": self.energy_status
         }
