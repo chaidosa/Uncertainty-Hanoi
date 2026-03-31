@@ -1,6 +1,7 @@
 import torch
 import math
 import numpy as np
+import os
 import time
 import random
 import json
@@ -447,6 +448,7 @@ class BoxTowerOfHanoiEnv(GenericEnv, BoxManipulationCmd):
         self.success_count = 0
         self.finish_count = 0
         self.round_count = -1
+        self.benchmark_complete = False
         
         self.benchmark_data = []
         self.total_evaluation_number = 100
@@ -626,14 +628,12 @@ class BoxTowerOfHanoiEnv(GenericEnv, BoxManipulationCmd):
         self.benchmark_data.append(benchmark_data)
 
     def save_log_benchmark_data(self):
-        #save as npz file
         filename = f"Tower_of_hanoi_benchmark/TOH_base_benchmark.npz"
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
         np.savez(filename, benchmark_data=self.benchmark_data)
 
-        print()
         print(f"\nSaved benchmark data to {filename}")
-
-        exit()
+        self.benchmark_complete = True
 
     def initial_variables_for_delta_env(self):
         # Re-initialize interactive key bindings to ensure PosDelta controls take precedence

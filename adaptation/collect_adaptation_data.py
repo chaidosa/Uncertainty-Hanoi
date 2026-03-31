@@ -64,6 +64,10 @@ def collect(
     env_fn = env_factory("BoxTowerOfHanoiEnv", env_args)
     env = env_fn()
 
+    # Disable the benchmark auto-save/exit that triggers at 100 episodes —
+    # data collection needs to run for thousands of episodes uninterrupted.
+    env.total_evaluation_number = num_episodes + 1
+
     from env.tasks.boxtowerofhanoienv.boxtowerofhanoienv import ADAPTATION_OBS_DIM
 
     all_obs_seqs: list[np.ndarray] = []

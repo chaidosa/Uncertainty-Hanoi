@@ -174,6 +174,10 @@ class MujocoViewer():
         self._video_path = "/tmp/video_"
         self._fps = None
 
+        # Custom HUD overlay (set externally, e.g. by visual_eval)
+        self._custom_overlay_title = ""
+        self._custom_overlay_content = ""
+
     def render(self):
         if glfw.window_should_close(self.window):
             self.close()
@@ -281,6 +285,13 @@ class MujocoViewer():
                     1.0, 1.0, 1.0,       # text
                     self.ctx
                 )
+            if self._custom_overlay_title:
+                mj.mjr_overlay(mj.mjtFontScale.mjFONTSCALE_150.value,
+                               mj.mjtGridPos.mjGRID_TOPRIGHT,
+                               self.viewport,
+                               self._custom_overlay_title,
+                               self._custom_overlay_content,
+                               self.ctx)
             glfw.swap_buffers(self.window)
         glfw.poll_events()
 

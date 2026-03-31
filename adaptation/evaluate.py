@@ -256,6 +256,7 @@ def eval_full_hanoi(
     env_args.reward_name = "humanoidhanoi"
     env_args.dynamics_randomization = True
     env = env_factory("BoxTowerOfHanoiEnv", env_args)()
+    env.total_evaluation_number = num_episodes + 1
 
     adapt = AdaptationModule(device=device)
     adapt.load(adaptation_ckpt)
