@@ -225,7 +225,8 @@ class BoxTowerOfHanoiEnv(GenericEnv, BoxManipulationCmd):
 
     def step(self):
 
-        self.draw_markers()
+        if self.sim.viewer is not None:
+            self.draw_markers()
 
         simulator_repeat_steps = int(self.sim.simulator_rate / self.policy_rate)
         # Hold current motor positions (zero delta): stable stand without a learned policy.
